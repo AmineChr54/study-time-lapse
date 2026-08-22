@@ -16,6 +16,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 import common
+import theme
 from common import (BUSY, NO_DEVICE, NO_FRAME, OK, SKIPPED, STATE_COMPLETED,
                     STATE_RUNNING, STATE_STOPPED, TIMEOUT, Session,
                     fmt_clock, fmt_duration, fmt_size)
@@ -29,6 +30,10 @@ WARN_AFTER_FAILURES = 5
 
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
+# Before Tk exists, or Windows bitmap-scales the whole app and the type looks
+# soft next to native windows.
+theme.enable_dpi_awareness()
+
 
 def _spawn(args, timeout):
     return subprocess.run([sys.executable, GRABBER] + args,
@@ -39,12 +44,23 @@ def _spawn(args, timeout):
 class CaptureApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Study Time-Lapse - Capture")
+        self.title("Study Time-Lapse")
         self.resizable(False, False)
+        self.configure(bg=theme.BG)
+        theme.apply_icon(self)
+        self.scale = theme.dpi_scale(self)
+        theme.tune_tk_scaling(self, self.scale)
+        theme.style_widgets(self)
+        self.after(10, lambda: theme.apply_dark_chrome(self))
+
+        self.view = "compact"
+        self.top_var = tk.BooleanVar(value=True)
+        self._ended = None
 
         self.cameras = []
         self.camera_index = tk.IntVar(value=-1)
         self.thumbs = {}
+        self.cam_tiles = {}
 
         self.session = None
         self.running = False
@@ -65,12 +81,12 @@ class CaptureApp(tk.Tk):
     # setup view
     # ------------------------------------------------------------------
     def _build_setup(self):
-        f = ttk.Frame(self, padding=16)
+        f = ttk.Frame(self, padding=self.px(14))
         f.grid(sticky="nsew")
         self.setup_frame = f
 
-        ttk.Label(f, text="Study session", font=("Segoe UI", 13, "bold")).grid(
-            row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
+        ttk.Label(f, text="Study session", style="Title.TLabel").grid(
+            row=0, column=0, columnspan=4, sticky="w", pady=(0, 14))
 
         self.v_hours = tk.StringVar(value="6")
         self.v_mins = tk.StringVar(value="0")
@@ -115,23 +131,26 @@ class CaptureApp(tk.Tk):
 
         head = ttk.Frame(f)
         head.grid(row=7, column=0, columnspan=4, sticky="w")
-        ttk.Label(head, text="Camera", font=("Segoe UI", 10, "bold")).pack(side="left")
-        ttk.Label(head, text="  pick the one that looks right - index order is not reliable",
-                  foreground="#777").pack(side="left")
+        ttk.Label(head, text="Camera", style="Head.TLabel").pack(side="left")
+        ttk.Label(head, style="Faint.TLabel",
+                  text="   pick the one that looks right - index order is not reliable"
+                  ).pack(side="left")
 
         self.cam_row = ttk.Frame(f)
         self.cam_row.grid(row=8, column=0, columnspan=4, sticky="w", pady=8)
         self.cam_status = ttk.Label(self.cam_row, text="Detecting cameras...")
         self.cam_status.pack(side="left")
 
-        self.readout = ttk.Label(f, text="", font=("Segoe UI", 10))
-        self.readout.grid(row=9, column=0, columnspan=4, sticky="w", pady=(8, 2))
-        self.warning = ttk.Label(f, text="", foreground="#b00020", wraplength=440)
+        self.readout = ttk.Label(f, text="", style="Dim.TLabel")
+        self.readout.grid(row=9, column=0, columnspan=4, sticky="w", pady=(10, 2))
+        self.warning = ttk.Label(f, text="", style="Warn.TLabel",
+                                 wraplength=self.px(420))
         self.warning.grid(row=10, column=0, columnspan=4, sticky="w")
 
         actions = ttk.Frame(f)
         actions.grid(row=11, column=0, columnspan=4, sticky="ew", pady=(14, 0))
-        self.start_btn = ttk.Button(actions, text="Start session", command=self.on_start)
+        self.start_btn = ttk.Button(actions, text="Start session",
+                                    style="Accent.TButton", command=self.on_start)
         self.start_btn.pack(side="right")
         ttk.Button(actions, text="Open folder",
                    command=lambda: common.open_in_explorer(common.ensure_root())).pack(side="left")
@@ -175,7 +194,7 @@ class CaptureApp(tk.Tk):
             child.destroy()
         self.cameras = found
         if not found:
-            ttk.Label(self.cam_row, foreground="#b00020",
+            ttk.Label(self.cam_row, style="Error.TLabel",
                       text="No camera available. It may be in use by another app - "
                            "close it and press Rescan.").pack(side="left")
             self.camera_index.set(-1)
@@ -183,22 +202,36 @@ class CaptureApp(tk.Tk):
             return
 
         self.thumbs = {}
-        for slot, cam in enumerate(found):
+        self.cam_tiles = {}
+        for cam in found:
             index = cam["index"]
             box = ttk.Frame(self.cam_row, padding=4)
             box.pack(side="left", padx=4)
             try:
                 self.thumbs[index] = tk.PhotoImage(file=cam["thumb"])
-                image = tk.Label(box, image=self.thumbs[index], borderwidth=2, relief="flat")
+                image = tk.Label(box, image=self.thumbs[index], borderwidth=2,
+                                 relief="solid", bg=theme.BG,
+                                 highlightthickness=2, highlightbackground=theme.BG)
             except Exception:
-                image = tk.Label(box, text="camera %d" % index, width=20, height=6)
+                image = tk.Label(box, text="camera %d" % index, width=20, height=6,
+                                 bg=theme.SURFACE, fg=theme.TEXT_DIM)
             image.pack()
             image.bind("<Button-1>", lambda _e, i=index: self.camera_index.set(i))
+            self.cam_tiles[index] = image
             ttk.Radiobutton(box, text=self.name_for(index, len(found), names)[:30],
                             value=index, variable=self.camera_index).pack(anchor="w")
 
         self.camera_index.set(found[0]["index"])
+        self.highlight_camera()
         self.refresh_readout()
+
+    def highlight_camera(self):
+        chosen = self.camera_index.get()
+        for index, tile in getattr(self, "cam_tiles", {}).items():
+            if not tile.winfo_exists():
+                continue
+            tile.configure(highlightbackground=theme.ACCENT if index == chosen
+                           else theme.BG)
 
     @staticmethod
     def name_for(index, found_count, names):
@@ -235,6 +268,7 @@ class CaptureApp(tk.Tk):
     def refresh_readout(self):
         if self.setup_frame is None:
             return
+        self.highlight_camera()
         study, output, fps, width, height, quality = self.read_settings()
         if study <= 0 or output <= 0 or fps <= 0:
             self.readout.config(text="")
@@ -332,37 +366,186 @@ class CaptureApp(tk.Tk):
         self.clock.start(time.time(), time.monotonic())
         self.tick()
 
+    # -- recording views -------------------------------------------------
+    # Two layouts driven by the same clock. COMPACT reproduces the Windows 11
+    # Clock focus-session mini widget: measured off a screenshot, it is 176x167
+    # logical units with a 76-unit disc and the dots sitting inside it.
+    # EXPANDED is the same idea with room for the frame count and status lines.
+    # The chevron top-left swaps between them; both windows are borderless, so
+    # every piece of chrome is drawn on the canvas.
+    COMPACT = dict(w=176, h=167, chrome_y=23, ring_cy=83, ring=76,
+                   btn_y=136, main_x=74, side_x=102, main_d=20, side_d=16,
+                   big_pt=19, unit_pt=9)
+    EXPANDED = dict(w=300, h=418, chrome_y=23, ring_cy=140, ring=150,
+                    btn_y=352, main_x=108, side_x=152, third_x=196,
+                    main_d=44, side_d=36, big_pt=25, unit_pt=10)
+
+    ICON_EXPAND = "\uE740"
+    ICON_COLLAPSE = "\uE73F"
+    ICON_CLOSE = "\uE8BB"
+
+    def px(self, value):
+        return int(round(value * self.scale))
+
+    def icon_font(self, points):
+        return ("Segoe MDL2 Assets", points)
+
     def _build_run(self):
-        self.title("Study Time-Lapse - Recording")
-        f = ttk.Frame(self, padding=14)
-        f.grid(sticky="nsew")
-        self.run_frame = f
+        self.view = getattr(self, "view", "compact")
+        self._build_view()
 
-        self.status = ttk.Label(f, text="", font=("Segoe UI", 11))
-        self.status.grid(row=0, column=0, columnspan=3, sticky="w")
+    def _build_view(self):
+        for child in self.winfo_children():
+            child.destroy()
 
-        self.progress = ttk.Progressbar(f, length=380, mode="determinate",
-                                        maximum=self.session.total_slots)
-        self.progress.grid(row=1, column=0, columnspan=3, sticky="ew", pady=8)
+        spec = self.COMPACT if self.view == "compact" else self.EXPANDED
+        self.spec = spec
+        width, height = self.px(spec["w"]), self.px(spec["h"])
 
-        self.detail = ttk.Label(f, text="", foreground="#555")
-        self.detail.grid(row=2, column=0, columnspan=3, sticky="w")
-        self.notice = ttk.Label(f, text="", foreground="#b06000", wraplength=380)
-        self.notice.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        # Borderless: a native title bar cannot be made to match the reference,
+        # so the window is undecorated and painted end to end.
+        self.overrideredirect(True)
+        self.attributes("-topmost", self.top_var.get())
+        self.geometry("%dx%d" % (width, height))
 
-        actions = ttk.Frame(f)
-        actions.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(12, 0))
-        ttk.Button(actions, text="Stop", command=self.on_stop).pack(side="right")
-        ttk.Button(actions, text="Folder",
-                   command=lambda: common.open_in_explorer(self.session.path)).pack(side="left")
-        self.top_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(actions, text="Always on top", variable=self.top_var,
-                        command=lambda: self.attributes("-topmost", self.top_var.get())
-                        ).pack(side="left", padx=8)
+        canvas = tk.Canvas(self, width=width, height=height, bg=theme.BG,
+                           highlightthickness=0, bd=0)
+        canvas.pack()
+        self.canvas = canvas
+        self.run_frame = canvas
+        mid = width // 2
+        self.after(20, lambda: theme.round_window(self, self.px(8)))
 
-    # ------------------------------------------------------------------
-    # the clock
-    # ------------------------------------------------------------------
+        # -- chrome ------------------------------------------------------
+        chrome_y = self.px(spec["chrome_y"])
+        self.toggle_item = canvas.create_text(
+            self.px(17), chrome_y,
+            text=self.ICON_EXPAND if self.view == "compact" else self.ICON_COLLAPSE,
+            fill=theme.TEXT_DIM, font=self.icon_font(11))
+        canvas.create_text(mid, chrome_y, text="Study session", fill=theme.TEXT,
+                           font=theme.ui_font(11))
+        self.close_item = canvas.create_text(
+            width - self.px(17), chrome_y, text=self.ICON_CLOSE,
+            fill=theme.TEXT_DIM, font=self.icon_font(10))
+        for item, handler in ((self.toggle_item, self.toggle_view),
+                              (self.close_item, self.on_close)):
+            canvas.tag_bind(item, "<Button-1>", lambda _e, h=handler: h())
+            canvas.tag_bind(item, "<Enter>",
+                            lambda _e, i=item: canvas.itemconfigure(i, fill=theme.TEXT))
+            canvas.tag_bind(item, "<Leave>",
+                            lambda _e, i=item: canvas.itemconfigure(i, fill=theme.TEXT_DIM))
+
+        # -- ring --------------------------------------------------------
+        ring_px = self.px(spec["ring"])
+        self._ring_fraction = None
+        self._ring_photo = theme.photo(theme.ring_image(ring_px, 0.0))
+        self.ring_item = canvas.create_image(mid, self.px(spec["ring_cy"]),
+                                             image=self._ring_photo)
+
+        cy = self.px(spec["ring_cy"])
+        if self.view == "compact":
+            # "352 min" on one line, laid out like the reference. Both are
+            # anchored west and repositioned once measured, because the value
+            # changes width (3 digits to 2 to 1) and the pair has to stay
+            # centred in the disc as a group.
+            self.big_item = canvas.create_text(
+                mid, cy, anchor="w", text="--", fill=theme.TEXT,
+                font=theme.ui_font(spec["big_pt"], "light"))
+            self.big_sub_item = canvas.create_text(
+                mid, cy + self.px(3), anchor="w", text="min",
+                fill=theme.TEXT_DIM, font=theme.ui_font(spec["unit_pt"]))
+        else:
+            self.big_item = canvas.create_text(
+                mid, cy - self.px(10), text="--:--", fill=theme.TEXT,
+                font=theme.ui_font(spec["big_pt"], "light"))
+            self.big_sub_item = canvas.create_text(
+                mid, cy + self.px(20), text="left", fill=theme.TEXT_DIM,
+                font=theme.ui_font(spec["unit_pt"]))
+
+        # -- detail lines (expanded only) --------------------------------
+        self.frames_item = self.detail_item = self.notice_item = self.dot_item = None
+        if self.view == "expanded":
+            self.frames_item = canvas.create_text(
+                mid, self.px(246), text="", fill=theme.TEXT,
+                font=theme.ui_font(10, "semilight"))
+            self.dot_item = canvas.create_oval(0, 0, 0, 0, fill=theme.ACCENT,
+                                               outline="")
+            self.detail_item = canvas.create_text(
+                mid, self.px(270), text="", fill=theme.TEXT_DIM,
+                font=theme.ui_font(9))
+            self.notice_item = canvas.create_text(
+                mid, self.px(298), text="", fill=theme.WARN,
+                font=theme.ui_font(9), width=self.px(spec["w"] - 40),
+                justify="center")
+
+        # -- buttons -----------------------------------------------------
+        btn_y = self.px(spec["btn_y"])
+        expanded = self.view == "expanded"
+        self.btn_stop = theme.CanvasButton(
+            canvas, self.px(spec["main_x"]), btn_y, theme.ICON_STOP, self.on_stop,
+            size=self.px(spec["main_d"]), fill=theme.ACCENT,
+            hover=theme.ACCENT_HOVER, glyph_colour="#1A1A1A",
+            label="Stop" if expanded else "")
+        self.btn_folder = theme.CanvasButton(
+            canvas, self.px(spec["side_x"]), btn_y, theme.ICON_FOLDER,
+            lambda: common.open_in_explorer(self.session.path),
+            size=self.px(spec["side_d"]), label="Folder" if expanded else "")
+        self.btn_pin = None
+        if expanded:
+            self.btn_pin = theme.CanvasButton(
+                canvas, self.px(spec["third_x"]), btn_y, theme.ICON_PIN,
+                self.toggle_on_top, size=self.px(spec["side_d"]), label="Pin")
+            self._sync_pin()
+
+        self._enable_drag(canvas)
+        if self.session is not None and self.clock is not None:
+            self.refresh_status()
+        # Carry the current notice across a view switch; it is only stored
+        # while compact, which has nowhere to show it.
+        notice = getattr(self, "_notice", None)
+        if notice and notice[0]:
+            self.set_notice(*notice)
+        if getattr(self, "_ended", None):
+            self.set_done_view(*self._ended)
+
+    # -- window behaviour --------------------------------------------------
+    def _enable_drag(self, canvas):
+        """A borderless window has no title bar, so the body drags it."""
+        def press(event):
+            self._drag = (event.x_root - self.winfo_x(),
+                          event.y_root - self.winfo_y())
+
+        def motion(event):
+            if getattr(self, "_drag", None):
+                self.geometry("+%d+%d" % (event.x_root - self._drag[0],
+                                          event.y_root - self._drag[1]))
+        canvas.bind("<Button-1>", press)
+        canvas.bind("<B1-Motion>", motion)
+        canvas.bind("<ButtonRelease-1>", lambda _e: setattr(self, "_drag", None))
+
+    def toggle_view(self):
+        """Swap between the compact widget and the full panel, in place."""
+        x, y = self.winfo_x(), self.winfo_y()
+        self.view = "expanded" if self.view == "compact" else "compact"
+        self._build_view()
+        self.geometry("+%d+%d" % (x, y))
+
+    def toggle_on_top(self):
+        self.top_var.set(not self.top_var.get())
+        self.attributes("-topmost", self.top_var.get())
+        self._sync_pin()
+
+    def _sync_pin(self):
+        if self.btn_pin is None:
+            return
+        pinned = self.top_var.get()
+        self.btn_pin.set_images(
+            theme.ICON_PIN, size=self.px(self.spec["side_d"]),
+            fill=theme.ACCENT if pinned else theme.BUTTON,
+            hover=theme.ACCENT_HOVER if pinned else theme.BUTTON_HOVER,
+            glyph_colour="#1A1A1A" if pinned else theme.TEXT,
+            label="Pinned" if pinned else "Pin")
+
     def tick(self):
         if not self.running:
             return
@@ -460,8 +643,21 @@ class CaptureApp(tk.Tk):
 
     def refresh_status(self):
         total = self.session.total_slots
-        interval = self.session.interval
         remaining = max(0.0, self.session.plan["study_seconds"] - self.clock.elapsed)
+
+        if self.view == "compact":
+            # One line, like the reference: a count and its unit.
+            if remaining >= 90:
+                self.set_big("%d" % round(remaining / 60.0), "min")
+            else:
+                self.set_big("%d" % round(remaining), "sec")
+        else:
+            self.set_big(common.fmt_compact_clock(remaining), "left")
+
+        self.set_ring(float(self.frames_ok) / max(1, total))
+
+        if self.frames_item is None:
+            return          # compact view carries no detail lines
 
         if self.grab_busy:
             nxt = "taking photo"
@@ -475,39 +671,107 @@ class CaptureApp(tk.Tk):
         # Windows lets a second process open the device but starves it of
         # frames, so an outright open failure (BUSY) is the rarer case.
         if status in (BUSY, NO_FRAME):
-            camera = "camera busy - retrying"
+            camera, tint = "camera busy", theme.WARN
         elif status == NO_DEVICE:
-            camera = "camera not found"
+            camera, tint = "camera not found", theme.ERROR
         elif status in (OK, None):
-            camera = "camera ok"
+            camera, tint = "camera ok", theme.ACCENT
         else:
-            camera = "last shot: %s" % status
+            camera, tint = str(status).replace("_", " "), theme.WARN
 
-        self.status.config(text="%s left   -   %d/%d frames   -   %s"
-                                % (fmt_clock(remaining), self.frames_ok, total, nxt))
-        self.progress["value"] = self.frames_ok
-        extra = ""
+        self.canvas.itemconfigure(
+            self.frames_item,
+            text="%d of %d frames  -  %s" % (self.frames_ok, total, nxt))
+        detail = "%s   -   ends around %s" % (camera, common.eta_text(remaining))
         if self.clock.suspended > 0:
-            extra = "   -   %s slept" % fmt_duration(self.clock.suspended)
-        self.detail.config(text="%s   -   ends around %s%s"
-                                % (camera, common.eta_text(remaining), extra))
+            detail += "   -   %s slept" % fmt_duration(self.clock.suspended)
+        self.canvas.itemconfigure(self.detail_item, text=detail)
+        self._place_status_dot(tint)
 
-    def set_notice(self, text):
-        if self.run_frame is not None:
-            self.notice.config(text=text)
+    def set_big(self, value, sub):
+        self.canvas.itemconfigure(self.big_item, text=value)
+        self.canvas.itemconfigure(self.big_sub_item, text=sub)
+        if self.view == "compact":
+            self._centre_value_pair()
+
+    def _centre_value_pair(self):
+        """Centre value and unit together inside the disc.
+
+        Measured after the text is set: the value swings between one and three
+        digits over a session, so a fixed position would leave it drifting.
+        """
+        canvas = self.canvas
+        mid = self.px(self.spec["w"]) // 2
+        cy = self.px(self.spec["ring_cy"])
+        value_box = canvas.bbox(self.big_item)
+        if not value_box:
+            return
+        unit_box = canvas.bbox(self.big_sub_item)
+        value_w = value_box[2] - value_box[0]
+        unit_w = (unit_box[2] - unit_box[0]) if unit_box else 0
+        gap = self.px(3) if unit_w else 0
+        left = mid - (value_w + gap + unit_w) / 2.0
+        canvas.coords(self.big_item, left, cy)
+        canvas.coords(self.big_sub_item, left + value_w + gap, cy + self.px(3))
+
+    def set_ring(self, fraction):
+        """Re-render only when a dot would actually change, not every tick."""
+        dots = 60
+        quantised = int(round(max(0.0, min(1.0, fraction)) * dots))
+        if quantised == self._ring_fraction:
+            return
+        self._ring_fraction = quantised
+        self._ring_photo = theme.photo(
+            theme.ring_image(self.px(self.spec["ring"]), quantised / float(dots)))
+        self.canvas.itemconfigure(self.ring_item, image=self._ring_photo)
+
+    def _place_status_dot(self, colour):
+        """Small state dot, kept just left of the centred detail line."""
+        if self.dot_item is None:
+            return
+        bounds = self.canvas.bbox(self.detail_item)
+        if not bounds:
+            return
+        x, y = bounds[0] - self.px(9), (bounds[1] + bounds[3]) / 2
+        r = self.px(2.5)
+        self.canvas.coords(self.dot_item, x - r, y - r, x + r, y + r)
+        self.canvas.itemconfigure(self.dot_item, fill=colour)
+
+    def set_notice(self, text, colour=theme.WARN):
+        # The compact view has no room for it; the text is kept so that
+        # expanding shows whatever is current.
+        self._notice = (text, colour)
+        if self.run_frame is not None and self.notice_item is not None:
+            self.canvas.itemconfigure(self.notice_item, text=text, fill=colour)
 
     # ------------------------------------------------------------------
     # finishing
     # ------------------------------------------------------------------
+    def set_done_view(self, headline, detail):
+        """End state: full ring, and Stop swapped for a tick."""
+        self._ended = (headline, detail)
+        self.set_ring(1.0)
+        self.set_big(headline, "" if self.view == "compact" else detail)
+        if self.frames_item is not None:
+            self.canvas.itemconfigure(self.frames_item, text=detail,
+                                      fill=theme.TEXT_DIM)
+            self.canvas.itemconfigure(self.detail_item, text=self.session.path,
+                                      fill=theme.TEXT_FAINT)
+            self.canvas.coords(self.dot_item, 0, 0, 0, 0)
+        self.set_notice("")
+        self.btn_stop.set_images(theme.ICON_CHECK, size=self.px(self.spec["main_d"]),
+                                 fill=theme.BUTTON, hover=theme.BUTTON_HOVER,
+                                 glyph_colour=theme.ACCENT,
+                                 label="Done" if self.view == "expanded" else "")
+        self.btn_stop.command = None
+
     def finish(self):
         self.running = False
         self.persist()
         self.session.set_state(STATE_COMPLETED)
         self.session.log_event("completed", frames=self.frames_ok)
         common.keep_awake(False)
-        self.status.config(text="Done - %d frames captured" % self.frames_ok)
-        self.detail.config(text="Saved to %s" % self.session.path)
-        self.set_notice("")
+        self.set_done_view("Done", "%d frames captured" % self.frames_ok)
         if messagebox.askyesno("Session complete",
                                "Captured %d frames.\n\nOpen the renderer now?"
                                % self.frames_ok):
@@ -523,8 +787,7 @@ class CaptureApp(tk.Tk):
         self.session.set_state(STATE_STOPPED)
         self.session.log_event("stopped", frames=self.frames_ok)
         common.keep_awake(False)
-        self.status.config(text="Stopped - %d frames captured" % self.frames_ok)
-        self.set_notice("")
+        self.set_done_view("Stopped", "%d frames captured" % self.frames_ok)
         if messagebox.askyesno("Stopped", "Open the renderer?"):
             self.open_renderer()
 

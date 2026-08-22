@@ -13,6 +13,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import common
+import theme
 from common import fmt_duration
 
 # Best effort only: on Windows a DLL loaded afterwards may keep its own copy
@@ -120,6 +121,7 @@ class RenderApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Study Time-Lapse - Render")
+        theme.apply_icon(self)
         self.geometry("860x560")
         self.minsize(760, 500)
 

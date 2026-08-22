@@ -1,4 +1,8 @@
-# Study Time-Lapse
+<p align="center">
+  <img src="assets/logo.png" alt="Study Time-Lapse" width="120">
+</p>
+
+<h1 align="center">Study Time-Lapse</h1>
 
 **Turn a six-hour study session into a 45-second time-lapse.** A lightweight
 Windows desktop app that photographs you with your webcam at a computed
@@ -18,6 +22,14 @@ and resumes where it left off if it is closed or crashes.
 - **~44 MB resident, near 0% CPU** — the recorder never loads OpenCV
 - **No `ffmpeg` install** — OpenCV bundles its own
 - **Your camera stays free** — held for about a second per shot, then released
+
+<p align="center">
+  <img src="docs/compact.png" alt="Compact widget" width="250">
+  &nbsp;&nbsp;
+  <img src="docs/expanded.png" alt="Expanded panel" width="215">
+</p>
+
+<p align="center"><i>Compact widget, and the expanded panel. The arrow top-left swaps between them.</i></p>
 
 Two separate apps:
 
@@ -39,6 +51,11 @@ and several sessions can be joined into one video.
    Windows Hello camera.
 4. Hit **Start session** and get on with studying.
 5. Afterwards, double-click **`Render.bat`**, tick the session, and render.
+
+While recording, the window sits on top as a small widget. The arrow in its
+top-left corner expands it to the full panel — with the frame count, camera
+state and finish time — and collapses it again. Both views are borderless and
+drag from anywhere on their body.
 
 ## How the interval is worked out
 
@@ -134,14 +151,34 @@ known-folder lookup for Pictures, and the WMI camera names — each already fall
 back gracefully, so porting to macOS or Linux is mostly a matter of replacing
 those three.
 
-## Files
+## Layout
 
-| File | Role |
-|---|---|
-| `capture.py` | App 1: setup screen, session clock, status view |
-| `render.py` | App 2: session browser and video writer |
-| `grabber.py` | One-shot camera helper, spawned per photo and per probe |
-| `common.py` | Paths, session manifest, slot clock, formatting |
+```
+Capture.bat          launch the recorder
+Render.bat           launch the video maker
+src/
+  capture.py         App 1: setup screen, session clock, both recording views
+  render.py          App 2: session browser and video writer
+  grabber.py         one-shot camera helper, spawned per photo and per probe
+  common.py          paths, session manifest, slot clock, formatting
+  theme.py           palette, DPI handling, rendered ring and buttons
+assets/              logo.png, logo.ico
+docs/                screenshots
+```
+
+### About the interface
+
+The recording views are drawn on a canvas rather than assembled from widgets,
+because Tk draws shapes without antialiasing and circles came out harsh. The
+ring and the round buttons are rendered with Pillow at 4x and downsampled;
+text is left to Tk, which Windows already antialiases. The palette and the
+compact view's proportions were measured from a screenshot of the Windows 11
+Clock focus-session widget.
+
+The app also declares itself DPI-aware. Without that Windows bitmap-scales the
+whole interface on a high-DPI display, which is why unaware apps look soft next
+to native ones. All geometry is therefore written in logical units and
+multiplied by the display scale.
 
 `capture.py` never imports OpenCV. Every photo is taken by a throwaway
 `grabber.py` subprocess, which keeps the resident process at about **44 MB** and

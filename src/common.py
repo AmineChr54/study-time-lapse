@@ -204,6 +204,20 @@ def fmt_clock(seconds):
     return "%02d:%02d:%02d" % (h, m, s)
 
 
+def fmt_compact_clock(seconds):
+    """H:MM:SS, dropping the hours field entirely when there are none.
+
+    A six-hour session reads 5:59:12 and the last minutes read 04:31, rather
+    than padding every short session out to 00:04:31.
+    """
+    seconds = int(max(0, seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return "%d:%02d:%02d" % (h, m, s)
+    return "%02d:%02d" % (m, s)
+
+
 def eta_text(remaining_seconds):
     end = datetime.now() + timedelta(seconds=max(0, remaining_seconds))
     return end.strftime("%H:%M")

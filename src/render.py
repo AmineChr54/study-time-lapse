@@ -13,8 +13,9 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import common
+import encoder
 import theme
-from common import fmt_duration
+from common import fmt_duration, fmt_size
 
 # Best effort only: on Windows a DLL loaded afterwards may keep its own copy
 # of the environment, so the .bat launchers set these before Python starts.
@@ -26,21 +27,6 @@ CHECKED = "☑"
 UNCHECKED = "☐"
 
 RESOLUTION_CHOICES = ["Source", "1920 x 1080", "1280 x 720", "854 x 480"]
-# avc1 (H.264) first because it is what browsers, phones and chat apps can
-# actually play; mp4v falls back to MPEG-4 Part 2, which many of them refuse.
-# OpenCV logs a scary-looking OpenH264 failure on the way and then recovers,
-# so trust the fourcc read back from the finished file, not the request.
-FOURCC_CANDIDATES = ("avc1", "mp4v")
-
-
-def actual_fourcc(path):
-    """The codec really present in a written file."""
-    import cv2
-    cap = cv2.VideoCapture(path)
-    value = int(cap.get(cv2.CAP_PROP_FOURCC))
-    cap.release()
-    tag = "".join(chr((value >> (8 * i)) & 0xFF) for i in range(4)).strip()
-    return tag or "unknown"
 
 
 def read_image(path):
@@ -107,23 +93,13 @@ def resample(paths, count):
     return [paths[i * len(paths) // count] for i in range(count)]
 
 
-def open_writer(path, fps, size):
-    import cv2
-    for name in FOURCC_CANDIDATES:
-        writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*name), fps, size)
-        if writer.isOpened():
-            return writer, name
-        writer.release()
-    return None, None
-
-
 class RenderApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Study Time-Lapse - Render")
         theme.apply_icon(self)
-        self.geometry("860x560")
-        self.minsize(760, 500)
+        self.geometry("880x600")
+        self.minsize(780, 560)
 
         self.sessions = []
         self.checked = set()
@@ -184,6 +160,9 @@ class RenderApp(tk.Tk):
         self.v_target = tk.StringVar(value="45")
         self.v_hold = tk.BooleanVar(value=True)
         self.v_res = tk.StringVar(value="Source")
+        self.v_quality = tk.StringVar(value=encoder.DEFAULT_QUALITY)
+        self.v_codec = tk.StringVar(value=encoder.H264)
+        self.v_denoise = tk.BooleanVar(value=True)
         self.v_out = tk.StringVar(value="")
 
         ttk.Label(opts, text="Frame rate").grid(row=0, column=0, sticky="w")
@@ -208,14 +187,34 @@ class RenderApp(tk.Tk):
                         ).grid(row=1, column=2, columnspan=4, sticky="w",
                                padx=(16, 0), pady=(8, 0))
 
-        ttk.Label(opts, text="Save to").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(opts, textvariable=self.v_out, width=62).grid(
-            row=2, column=1, columnspan=5, sticky="ew", padx=6, pady=(8, 0))
-        ttk.Button(opts, text="...", width=3, command=self.choose_output).grid(
-            row=2, column=6, pady=(8, 0))
+        ttk.Label(opts, text="Quality").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Combobox(opts, textvariable=self.v_quality, width=12, state="readonly",
+                     values=encoder.QUALITY_CHOICES).grid(row=2, column=1, sticky="w",
+                                                          padx=6, pady=(8, 0))
+        ttk.Combobox(opts, textvariable=self.v_codec, width=24, state="readonly",
+                     values=encoder.CODEC_CHOICES).grid(row=2, column=2, columnspan=2,
+                                                        sticky="w", padx=(16, 0),
+                                                        pady=(8, 0))
+        ttk.Checkbutton(opts, text="Reduce camera noise",
+                        variable=self.v_denoise).grid(row=2, column=4, columnspan=3,
+                                                      sticky="w", padx=(12, 0),
+                                                      pady=(8, 0))
 
-        for var in (self.v_fps, self.v_target):
-            var.trace_add("write", lambda *_: self.refresh_summary())
+        ttk.Label(opts, text="Save to").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(opts, textvariable=self.v_out, width=62).grid(
+            row=3, column=1, columnspan=5, sticky="ew", padx=6, pady=(8, 0))
+        ttk.Button(opts, text="...", width=3, command=self.choose_output).grid(
+            row=3, column=6, pady=(8, 0))
+
+        self.backend_label = ttk.Label(opts, text=encoder.describe_backend(),
+                                       foreground="#777")
+        self.backend_label.grid(row=4, column=0, columnspan=7, sticky="w",
+                                pady=(8, 0))
+
+        # The suggested file name carries the frame rate, so it has to follow
+        # the frame rate box rather than only the session selection.
+        self.v_fps.trace_add("write", lambda *_: self.on_fps_change())
+        self.v_target.trace_add("write", lambda *_: self.refresh_summary())
 
         bottom = ttk.Frame(root)
         bottom.grid(row=3, column=0, columnspan=3, sticky="ew")
@@ -294,18 +293,27 @@ class RenderApp(tk.Tk):
             self.preview_label.config(image="", text="no preview")
         self.preview_caption.config(text="%s\nfirst frame" % info["name"])
 
+    def on_fps_change(self):
+        self.suggest_output()
+        self.refresh_summary()
+
     def suggest_output(self):
+        """Refresh the suggested path, unless the user has typed their own."""
         chosen = self.selected_sessions()
         if not chosen:
             return
+        current = self.v_out.get().strip()
+        if current and current != getattr(self, "_suggested_out", None):
+            return          # hand-picked path - leave it alone
         try:
             fps = int(float(self.v_fps.get()))
         except (ValueError, TypeError):
-            fps = 30
+            return          # mid-edit ("6" on the way to "60"); keep the old name
         name = "timelapse_%dfps.mp4" % fps
         if len(chosen) > 1:
             name = "timelapse_%dsessions_%dfps.mp4" % (len(chosen), fps)
-        self.v_out.set(os.path.join(chosen[0]["path"], name))
+        self._suggested_out = os.path.join(chosen[0]["path"], name)
+        self.v_out.set(self._suggested_out)
 
     def choose_output(self):
         current = self.v_out.get()
@@ -387,14 +395,16 @@ class RenderApp(tk.Tk):
         self.cancel_btn.state(["!disabled"])
         self.bar.configure(maximum=len(paths), value=0)
         self.bar.grid()
+        settings = (self.v_quality.get(), self.v_codec.get(), self.v_denoise.get())
         threading.Thread(target=self._render_worker,
-                         args=(paths, fps, out, size), daemon=True).start()
+                         args=(paths, fps, out, size, settings), daemon=True).start()
         self.after(100, self.poll_progress)
 
-    def _render_worker(self, paths, fps, out, size):
-        writer = None
-        # VideoWriter shares imwrite's narrow-char path problem, so encode to a
-        # temp file and move it into place afterwards.
+    def _render_worker(self, paths, fps, out, size, settings):
+        quality, codec, denoise = settings
+        enc = None
+        # Encoders share imwrite's narrow-char path problem on Windows, so
+        # write to a temp file and move it into place afterwards.
         handle, temp = tempfile.mkstemp(suffix=".mp4")
         os.close(handle)
         os.unlink(temp)
@@ -405,14 +415,14 @@ class RenderApp(tk.Tk):
                     raise RuntimeError("Could not read %s" % paths[0])
                 size = (first.shape[1], first.shape[0])
 
-            writer, _requested = open_writer(temp, fps, size)
-            if writer is None:
-                raise RuntimeError("No usable video encoder was available.")
+            enc = encoder.open_encoder(temp, fps, size, quality, codec, denoise)
 
             written = 0
             last_good = None
             for index, path in enumerate(paths):
                 if self.cancel.is_set():
+                    enc.abort()
+                    enc = None
                     self.progress_q.put(("cancelled", None))
                     return
                 image = read_image(path)
@@ -424,24 +434,26 @@ class RenderApp(tk.Tk):
                 else:
                     image = fit(image, size[0], size[1])
                     last_good = image
-                writer.write(image)
+                enc.write(image)
                 written += 1
                 if index % 5 == 0:
                     self.progress_q.put(("progress", index))
 
-            writer.release()
-            writer = None
             if written == 0:
                 raise RuntimeError("None of the frames could be read.")
+            enc.close()          # flushes the encoder and finalises the file
+            label = enc.label
+            enc = None
             os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
             shutil.move(temp, out)
             temp = None
-            self.progress_q.put(("done", (out, written, actual_fourcc(out))))
+            self.progress_q.put(
+                ("done", (out, written, label, os.path.getsize(out))))
         except Exception as exc:
             self.progress_q.put(("error", str(exc)))
         finally:
-            if writer is not None:
-                writer.release()
+            if enc is not None:
+                enc.abort()
             if temp and os.path.exists(temp):
                 try:
                     os.unlink(temp)
@@ -458,15 +470,17 @@ class RenderApp(tk.Tk):
                                         foreground="#333")
                     continue
                 self.finish_render()
+                result = None
                 if kind == "done":
-                    out, written, fourcc = payload
+                    out, written, label, nbytes = payload
                     self.bar["value"] = self.bar["maximum"]
-                    self.summary.config(
-                        text="Done - %d frames, %s codec" % (written, fourcc),
-                        foreground="#0a7")
-                    if messagebox.askyesno("Render complete",
-                                           "Wrote %d frames to\n%s\n\nOpen the folder?"
-                                           % (written, out)):
+                    result = ("Done - %d frames, %s, %s"
+                              % (written, label, fmt_size(nbytes)))
+                    self.summary.config(text=result, foreground="#0a7")
+                    if messagebox.askyesno(
+                            "Render complete",
+                            "Wrote %d frames to\n%s\n\n%s, %s\n\nOpen the folder?"
+                            % (written, out, label, fmt_size(nbytes))):
                         common.open_in_explorer(os.path.dirname(out))
                 elif kind == "cancelled":
                     self.bar["value"] = 0
@@ -474,7 +488,11 @@ class RenderApp(tk.Tk):
                 else:
                     self.bar["value"] = 0
                     messagebox.showerror("Render failed", str(payload))
+                # refresh_summary re-enables the button and rewrites the line,
+                # so the result has to be put back afterwards.
                 self.refresh_summary()
+                if result:
+                    self.summary.config(text=result, foreground="#0a7")
                 return
         except queue.Empty:
             pass

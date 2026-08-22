@@ -20,7 +20,8 @@ webcam with your video calls, keeps the PC awake, notices if it sleeps anyway,
 and resumes where it left off if it is closed or crashes.
 
 - **~44 MB resident, near 0% CPU** — the recorder never loads OpenCV
-- **No `ffmpeg` install** — OpenCV bundles its own
+- **Tiny videos** — x264/x265 tuned for frames that barely change:
+  a 3200-frame session is ~20 MB, not 370 MB
 - **Your camera stays free** — held for about a second per shot, then released
 
 <p align="center">
@@ -128,23 +129,54 @@ notice under it.
   smooth and the running time honest. Turn it off to simply skip gaps.
 - **Resolution** — source, or a fixed size. Mixed sources are letterboxed, never
   stretched, so merging sessions from different cameras is safe.
+- **Quality** — *Smallest file* / *Balanced* / *High quality*, and the codec:
+  H.264 (plays everywhere) or H.265 (roughly half the size, needs a newer
+  player).
+- **Reduce camera noise** (on by default) — a light denoise before encoding.
 - Tick **several sessions** to concatenate them in date order.
 
-Video is written as H.264 (`avc1`), which plays in browsers, phones and chat
-apps, falling back to `mp4v` if H.264 is unavailable. OpenCV may print a noisy
-`OpenH264` warning on the way and then succeed anyway — the codec reported when
-the render finishes is read back from the finished file, so it is the truth.
+## About the file size
+
+A study time-lapse is unusually compressible: the same room, the same camera,
+the same light, and a subject who barely moves, so nearly everything in a frame
+is already in the frame before it. The renderer leans on exactly that — x264 or
+x265 at constant quality (CRF), long GOPs with scene detection off, and extra
+B-frames and reference frames so a returning pose can be predicted from further
+back.
+
+The one thing fighting it is webcam sensor noise, which changes in every pixel
+of every frame and looks like real detail to an encoder. The optional denoise
+pass removes it, and on its own is worth about a third of the file size.
+
+A real 3207-frame, 720p session measured three ways:
+
+| | |
+|---|---|
+| OpenCV's own writer (what this used to do) | **370 MB** |
+| H.264, *Balanced* | **20.7 MB** |
+| H.265, *Smallest file* | **3.9 MB** |
+
+Everything is decided at render time, so re-rendering an old session with a
+different quality costs nothing but the encode.
 
 ## Requirements
 
 Windows, and Python 3 with:
 
 ```
-pip install opencv-python pillow numpy psutil pywin32
+pip install opencv-python pillow numpy psutil pywin32 imageio-ffmpeg
 ```
 
-No external `ffmpeg` is needed — OpenCV bundles its own. `tkinter` ships with
-Python. Then just double-click `Capture.bat`.
+`imageio-ffmpeg` is what makes the videos small — it ships an `ffmpeg` binary
+with x264 and x265, which the renderer drives over a pipe. A system-wide
+`ffmpeg` on `PATH` (or one dropped in `bin\ffmpeg.exe`, or pointed at by
+`STUDY_TIMELAPSE_FFMPEG`) is used just as happily.
+
+Without any of them the renderer still works, falling back to OpenCV's own
+writer — but that has no quality control at all and produces files roughly 15x
+larger, so the window says so under *Save to*.
+
+`tkinter` ships with Python. Then just double-click `Capture.bat`.
 
 The Windows-only parts are the sleep lock (`SetThreadExecutionState`), the
 known-folder lookup for Pictures, and the WMI camera names — each already falls
@@ -158,7 +190,8 @@ Capture.bat          launch the recorder
 Render.bat           launch the video maker
 src/
   capture.py         App 1: setup screen, session clock, both recording views
-  render.py          App 2: session browser and video writer
+  render.py          App 2: session browser and render window
+  encoder.py         FFmpeg/OpenCV encoders and the compression settings
   grabber.py         one-shot camera helper, spawned per photo and per probe
   common.py          paths, session manifest, slot clock, formatting
   theme.py           palette, DPI handling, rendered ring and buttons
